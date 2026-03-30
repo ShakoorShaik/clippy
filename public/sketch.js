@@ -1,379 +1,259 @@
-// Drawing tool settings
-let currentTool = 'brush';
+let panX = 0, panY = 0;
+let zoom = 1.0;
+
+let currentTool  = 'brush';
 let currentColor = '#000000';
-let brushSize = 10;
-let backgroundColor = '#ffffff';
+let brushSize    = 10;
+let bgColor      = '#ffffff';
 
-// Drawing state
-let isDrawing = false;
-let lastX, lastY;
-let startX, startY;
-let canvasScale = 1.0;
+let isDrawing  = false;
+let isPanning  = false;
+let spaceHeld  = false;
+let lastWX, lastWY;
+let startWX, startWY;
+let panStartX, panStartY, panStartMouseX, panStartMouseY;
 
-// Undo/Redo & Layer Management
-let historyStack = [];
-let currentHistoryIndex = -1;
-let tempCanvas;
-let layers = [];
+const WORLD_SIZE = 8000;
+let layers      = [];
 let activeLayer = 0;
-let history = [];     
-let redoStack = [];
+let history     = [];
+let redoStack   = [];
 
-// Game Overlay 
-let gameActive = false;
-let gamePromptText = '';
+let gameActive       = false;
+let gamePromptText   = '';
 let gameOverlayAlpha = 0;
+
+function isOverSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  if (!sidebar) return false;
+  const r = sidebar.getBoundingClientRect();
+  return mouseX >= r.left && mouseX <= r.right &&
+         mouseY >= r.top  && mouseY <= r.bottom;
+}
 
 function setup() {
   pixelDensity(1);
-  const canvas = createCanvas(1700, 800);
-  canvas.parent('canvas-container');
-
+  createCanvas(windowWidth, windowHeight).parent('canvas-container');
+  panX = WORLD_SIZE / 2 - windowWidth  / 2;
+  panY = WORLD_SIZE / 2 - windowHeight / 2;
   addNewLayer();
   saveState();
   setupEventListeners();
+  updateZoomDisplay();
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
 }
 
 function draw() {
-  background(backgroundColor);
+  background(bgColor);
 
-  push();
-
-  // Center and apply zoom for consistent scaling
-  translate(width / 2, height / 2);
-  scale(canvasScale);
-  translate(-width / 2, -height / 2); 
-
-  // Draw all layers
-  for (let g of layers) image(g, 0, 0);
-
-  // Show live shape preview while dragging  
-  if (isDrawing && (currentTool === 'line' || currentTool === 'rectangle' || currentTool === 'circle')) {
-    drawPreview();
+  for (let g of layers) {
+    image(g, -panX * zoom, -panY * zoom, WORLD_SIZE * zoom, WORLD_SIZE * zoom);
   }
 
-  // Apply spray effect continuously while mouse is down
-  if (isDrawing && currentTool === 'spray') {
-    drawSpray(layers[activeLayer]);
-  }
-  pop();
+  if (isDrawing && ['line','rectangle','circle'].includes(currentTool)) drawPreview();
+  if (isDrawing && currentTool === 'spray') drawSpray(layers[activeLayer]);
 
-  // Draw game overlay if active
+  cursor(spaceHeld || isPanning ? 'grab' : ARROW);
+
   if (gameActive && gamePromptText) {
-    gameOverlayAlpha = min(gameOverlayAlpha + 10, 180);
+    gameOverlayAlpha = min(gameOverlayAlpha + 10, 210);
+    const pad  = 16;
+    const boxW = min(width - pad * 2, 380);
     push();
     noStroke();
-    fill(0, 0, 0, gameOverlayAlpha);
-    rect(20, 20, 360, 90, 12);
-    fill(255);
-    textSize(22);
-    textStyle(BOLD);
-    text('Draw this:', 34, 52);
+    fill(13, 13, 20, gameOverlayAlpha);
+    rect(pad, pad, boxW, 76, 12);
+    fill(160, 170, 255, min(gameOverlayAlpha + 60, 255));
+    textSize(11); textStyle(BOLD); textAlign(LEFT, TOP);
+    text('DRAW THIS:', pad + 12, pad + 10);
+    fill(255, 255, 255, min(gameOverlayAlpha + 60, 255));
     textStyle(NORMAL);
-    textSize(28);
-    text(gamePromptText, 34, 88);
+    let fs = 28; textSize(fs);
+    while (textWidth(gamePromptText) > boxW - 24 && fs > 12) { fs--; textSize(fs); }
+    text(gamePromptText, pad + 12, pad + 30);
     pop();
   } else {
     gameOverlayAlpha = 0;
   }
 }
 
-// Setup UI event listeners
-function setupEventListeners() {
-  
-  // Color picker
-  document.getElementById('colorPicker').addEventListener('input', (e) => {
-    currentColor = e.target.value;
-  });
+function screenToWorldX(sx) { return sx / zoom + panX; }
+function screenToWorldY(sy) { return sy / zoom + panY; }
+function worldToScreenX(wx) { return (wx - panX) * zoom; }
+function worldToScreenY(wy) { return (wy - panY) * zoom; }
+function getWorldMouseX()   { return screenToWorldX(mouseX); }
+function getWorldMouseY()   { return screenToWorldY(mouseY); }
+function clampWorld(v)      { return constrain(v, 0, WORLD_SIZE); }
 
-  // Brush size slider
-  const brushSizeSlider = document.getElementById('brushSize');
-  const brushSizeValue  = document.getElementById('brushSizeValue');
-  brushSizeSlider.addEventListener('input', (e) => {
-    brushSize = parseInt(e.target.value);
-    brushSizeValue.textContent = brushSize;
-  });
-
-  // Tool selection
-  document.getElementById('toolSelect').addEventListener('change', (e) => {
-    currentTool = e.target.value;
-  });
-
-  // Text size slider
-  const textSizeSlider = document.getElementById('textSize');
-  const textSizeValue  = document.getElementById('textSizeValue');
-  if (textSizeSlider && textSizeValue) {
-    textSizeSlider.addEventListener('input', (e) => {
-      textSizeValue.textContent = parseInt(e.target.value);
-    });
-  }
-
-  // Background color picker
-  const bgColorPicker = document.getElementById('bgColorPicker');
-  if (bgColorPicker) {
-    bgColorPicker.addEventListener('input', (e) => {
-      backgroundColor = e.target.value;
-    });
-  }
-
-  // Layer controls
-  document.getElementById('newLayerBtn').addEventListener('click', addNewLayer);
-  document.getElementById('layerSelect').addEventListener('change', (e) => {
-    activeLayer = +e.target.value;
-  });
-
-  // Clear Active Layer
-  document.getElementById('clearBtn').addEventListener('click', () => {
-    if (confirm('Clear the active layer?')) {
-      saveState();
-      layers[activeLayer].clear();
-    }
-  });
-
-  // Save canvas as PNG
-  document.getElementById('saveBtn').addEventListener('click', () => {
-    saveCanvas('my-painting', 'png');
-  });
-
-  // Game mode controls
-  const startBtn = document.getElementById('startGameBtn');
-  const stopBtn  = document.getElementById('stopGameBtn');
-  const promptEl = document.getElementById('gamePrompt');
-
-  // Fetch a random drawing prompt
-  startBtn.addEventListener('click', async () => {
-    startBtn.disabled = true;
-    promptEl.textContent = 'Getting a prompt…';
-    try {
-      const res = await fetch('/get-prompt', { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok || !data?.prompt) {
-        throw new Error(data?.error || 'Failed to get prompt');
-      }
-      gamePromptText = (data.prompt || '').trim();
-      promptEl.textContent = `Prompt: ${gamePromptText}`;
-      gameActive = true;
-      gameOverlayAlpha = 0;
-      stopBtn.disabled = false;
-    } catch (err) {
-      console.error(err);
-      promptEl.textContent = 'Could not get a prompt. Try again.';
-      gameActive = false;
-    } finally {
-      startBtn.disabled = false;
-    }
-  });
-
-  // Stop game mode
-  stopBtn.addEventListener('click', () => {
-    gameActive = false;
-    gamePromptText = '';
-    document.getElementById('gamePrompt').textContent = '';
-    stopBtn.disabled = true;
-  });
-
-  stopBtn.disabled = true;
-}
-
-// Mouse event handlers
 function mousePressed() {
+  if (isOverSidebar()) return;
 
-  let adjustedMouseX = getAdjustedMouseX();
-  let adjustedMouseY = getAdjustedMouseY();
-
-  // Handle text tool input
-  if (currentTool === 'text') {
-    const inputEl = document.getElementById('textInput');
-    const sizeEl  = document.getElementById('textSize');
-    const textValue = (inputEl && inputEl.value || '').trim();
-    const size = parseInt((sizeEl && sizeEl.value) || '24', 10);
-    if (textValue.length > 0) {
-      saveState();
-      let g = layers[activeLayer];
-      g.noStroke();
-      g.fill(currentColor);
-      g.textSize(size);
-      g.text(textValue, adjustedMouseX, adjustedMouseY);
-    }
-    isDrawing = false;
+  if (mouseButton === CENTER || (mouseButton === LEFT && spaceHeld)) {
+    isPanning = true;
+    panStartX = panX; panStartY = panY;
+    panStartMouseX = mouseX; panStartMouseY = mouseY;
     return;
   }
 
-  // Start drawing
+  if (mouseButton !== LEFT) return;
+
+  const wx = clampWorld(getWorldMouseX());
+  const wy = clampWorld(getWorldMouseY());
+
+  if (currentTool === 'text') {
+    const inputEl   = document.getElementById('textInput');
+    const sizeEl    = document.getElementById('textSize');
+    const textValue = (inputEl?.value || '').trim();
+    const size      = parseInt(sizeEl?.value || '24', 10);
+    if (textValue.length > 0) {
+      saveState();
+      const g = layers[activeLayer];
+      g.noStroke(); g.fill(currentColor); g.textSize(size);
+      g.text(textValue, wx, wy);
+    }
+    return;
+  }
+
   isDrawing = true;
-  startX = adjustedMouseX; startY = adjustedMouseY;
-  lastX  = adjustedMouseX; lastY  = adjustedMouseY;
+  startWX = wx; startWY = wy;
+  lastWX  = wx; lastWY  = wy;
 
-  // Save state before drawing for undo support
-  if (
-    currentTool === 'brush' || currentTool === 'eraser' || currentTool === 'spray' ||
-    currentTool === 'line'  || currentTool === 'rectangle' || currentTool === 'circle'
-  ) {
-    saveState();
-  }
-
-  // Prepare temporary canvas for shape preview
-  if (currentTool === 'line' || currentTool === 'rectangle' || currentTool === 'circle') {
-    tempCanvas = null;
-  }
-
-  // Draw initial point for brush/eraser
-  if (currentTool === 'brush' || currentTool === 'eraser') {
-    drawPoint(adjustedMouseX, adjustedMouseY);
-  }
+  if (['brush','eraser','spray','line','rectangle','circle'].includes(currentTool)) saveState();
+  if (currentTool === 'brush' || currentTool === 'eraser') drawPoint(wx, wy);
 }
 
-
 function mouseDragged() {
-  if (!isDrawing) return;
+  if (isOverSidebar() && !isDrawing && !isPanning) return;
 
-  let adjustedMouseX = getAdjustedMouseX();
-  let adjustedMouseY = getAdjustedMouseY();
-
-  // Continuous brush or eraser strokes
-  if (currentTool === 'brush') {
-    drawLine(lastX, lastY, adjustedMouseX, adjustedMouseY);
-  } else if (currentTool === 'eraser') {
-    eraseLine(lastX, lastY, adjustedMouseX, adjustedMouseY);
+  if (isPanning) {
+    panX = panStartX - (mouseX - panStartMouseX) / zoom;
+    panY = panStartY - (mouseY - panStartMouseY) / zoom;
+    return;
   }
 
-  lastX = adjustedMouseX;
-  lastY = adjustedMouseY;
+  if (!isDrawing) return;
+  const wx = clampWorld(getWorldMouseX());
+  const wy = clampWorld(getWorldMouseY());
+  if (currentTool === 'brush')  drawLine(lastWX, lastWY, wx, wy);
+  if (currentTool === 'eraser') eraseLine(lastWX, lastWY, wx, wy);
+  lastWX = wx; lastWY = wy;
 }
 
 function mouseReleased() {
+  if (isPanning) { isPanning = false; return; }
   if (!isDrawing) return;
-
-  // Finalize shape drawing
-  if (currentTool === 'line') {
-    drawFinalLine();
-  } else if (currentTool === 'rectangle') {
-    drawFinalRectangle();
-  } else if (currentTool === 'circle') {
-    drawFinalCircle();
-  }
-
+  if (currentTool === 'line')      drawFinalLine();
+  if (currentTool === 'rectangle') drawFinalRectangle();
+  if (currentTool === 'circle')    drawFinalCircle();
   isDrawing = false;
-  tempCanvas = null;
 }
 
-function getAdjustedMouseX() {
-  return (mouseX - width / 2) / canvasScale + width / 2;
+function mouseWheel(event) {
+  if (isOverSidebar()) return;
+  const factor = event.delta > 0 ? 0.9 : 1.1;
+  const wx = getWorldMouseX(), wy = getWorldMouseY();
+  zoom = constrain(zoom * factor, 0.05, 10.0);
+  panX = wx - mouseX / zoom;
+  panY = wy - mouseY / zoom;
+  updateZoomDisplay();
+  return false;
 }
 
-function getAdjustedMouseY() {
-  return (mouseY - height / 2) / canvasScale + height / 2;
-}
-
-function drawPoint(x, y) {
-  let g = layers[activeLayer];
+function drawPoint(wx, wy) {
+  const g = layers[activeLayer];
   if (currentTool === 'brush') {
-    g.stroke(currentColor);
-    g.strokeWeight(brushSize);
-    g.point(x, y);
+    g.stroke(currentColor); g.strokeWeight(brushSize); g.point(wx, wy);
   } else if (currentTool === 'eraser') {
-    g.erase();
-    g.strokeWeight(brushSize);
-    g.point(x, y);
-    g.noErase();
+    g.erase(); g.strokeWeight(brushSize); g.point(wx, wy); g.noErase();
   }
 }
 
 function drawLine(x1, y1, x2, y2) {
-  let g = layers[activeLayer];
-  g.strokeWeight(brushSize);
-  g.strokeCap(ROUND);
-  if (currentTool === 'brush') {
-    g.stroke(currentColor);
-    g.line(x1, y1, x2, y2);
-  }
+  const g = layers[activeLayer];
+  g.stroke(currentColor); g.strokeWeight(brushSize); g.strokeCap(ROUND);
+  g.line(x1, y1, x2, y2);
 }
 
 function eraseLine(x1, y1, x2, y2) {
-  let g = layers[activeLayer];
-  g.strokeWeight(brushSize);
-  g.strokeCap(ROUND);
-  g.erase();
-  g.line(x1, y1, x2, y2);
-  g.noErase();
+  const g = layers[activeLayer];
+  g.strokeWeight(brushSize); g.strokeCap(ROUND);
+  g.erase(); g.line(x1, y1, x2, y2); g.noErase();
 }
 
 function drawFinalLine() {
-  let adjustedMouseX = getAdjustedMouseX();
-  let adjustedMouseY = getAdjustedMouseY();
-  let g = layers[activeLayer];
-  g.stroke(currentColor);
-  g.strokeWeight(brushSize);
-  g.line(startX, startY, adjustedMouseX, adjustedMouseY);
+  const wx = clampWorld(getWorldMouseX()), wy = clampWorld(getWorldMouseY());
+  const g  = layers[activeLayer];
+  g.stroke(currentColor); g.strokeWeight(brushSize);
+  g.line(startWX, startWY, wx, wy);
 }
 
 function drawFinalRectangle() {
-  let adjustedMouseX = getAdjustedMouseX();
-  let adjustedMouseY = getAdjustedMouseY();
-  let g = layers[activeLayer];
-  g.stroke(currentColor);
-  g.strokeWeight(brushSize);
-  g.noFill();
-  g.rect(startX, startY, adjustedMouseX - startX, adjustedMouseY - startY);
+  const wx = clampWorld(getWorldMouseX()), wy = clampWorld(getWorldMouseY());
+  const g  = layers[activeLayer];
+  g.stroke(currentColor); g.strokeWeight(brushSize); g.noFill();
+  g.rect(startWX, startWY, wx - startWX, wy - startWY);
 }
 
 function drawFinalCircle() {
-  let adjustedMouseX = getAdjustedMouseX();
-  let adjustedMouseY = getAdjustedMouseY();
-  let g = layers[activeLayer];
-  g.stroke(currentColor);
-  g.strokeWeight(brushSize);
-  g.noFill();
-  const diameter = dist(startX, startY, adjustedMouseX, adjustedMouseY) * 2;
-  g.ellipse(startX, startY, diameter, diameter);
+  const wx = clampWorld(getWorldMouseX()), wy = clampWorld(getWorldMouseY());
+  const g  = layers[activeLayer];
+  g.stroke(currentColor); g.strokeWeight(brushSize); g.noFill();
+  g.ellipse(startWX, startWY, dist(startWX, startWY, wx, wy) * 2);
 }
 
 function drawSpray(g) {
-  let adjustedMouseX = getAdjustedMouseX();
-  let adjustedMouseY = getAdjustedMouseY();
-  g.fill(currentColor);
-  g.noStroke();
-  for (let i = 0; i < 3; i++) {
-    const a = random(TWO_PI);
-    const r = random(brushSize * 2);
-    const x = adjustedMouseX + cos(a) * r;
-    const y = adjustedMouseY + sin(a) * r;
-    const size = random(1, brushSize / 3);
-    g.ellipse(x, y, size, size);
+  const wx = clampWorld(getWorldMouseX()), wy = clampWorld(getWorldMouseY());
+  g.fill(currentColor); g.noStroke();
+  for (let i = 0; i < 5; i++) {
+    const a = random(TWO_PI), r = random(brushSize * 2);
+    g.ellipse(wx + cos(a)*r, wy + sin(a)*r, random(1, max(2, brushSize / 3)));
   }
 }
 
 function drawPreview() {
-  let adjustedMouseX = getAdjustedMouseX();
-  let adjustedMouseY = getAdjustedMouseY();
-  stroke(currentColor);
-  strokeWeight(2);
-  noFill();
-  if (currentTool === 'line') {
-    line(startX, startY, adjustedMouseX, adjustedMouseY);
-  } else if (currentTool === 'rectangle') {
-    rect(startX, startY, adjustedMouseX - startX, adjustedMouseY - startY);
-  } else if (currentTool === 'circle') {
-    const diameter = dist(startX, startY, adjustedMouseX, adjustedMouseY) * 2;
-    ellipse(startX, startY, diameter, diameter);
-  }
+  const wx = getWorldMouseX(), wy = getWorldMouseY();
+  const sx1 = worldToScreenX(startWX), sy1 = worldToScreenY(startWY);
+  const sx2 = worldToScreenX(wx),      sy2 = worldToScreenY(wy);
+  push();
+  stroke(currentColor); strokeWeight(max(1, brushSize * zoom)); noFill();
+  if (currentTool === 'line')      line(sx1, sy1, sx2, sy2);
+  if (currentTool === 'rectangle') rect(sx1, sy1, sx2 - sx1, sy2 - sy1);
+  if (currentTool === 'circle')    ellipse(sx1, sy1, dist(sx1, sy1, sx2, sy2) * 2);
+  pop();
+}
+
+function zoomIn()    { zoomAround(width/2, height/2, 1.15); }
+function zoomOut()   { zoomAround(width/2, height/2, 0.87); }
+function zoomReset() { zoom = 1.0; updateZoomDisplay(); }
+
+function zoomAround(sx, sy, factor) {
+  const wx = screenToWorldX(sx), wy = screenToWorldY(sy);
+  zoom = constrain(zoom * factor, 0.05, 10.0);
+  panX = wx - sx / zoom;
+  panY = wy - sy / zoom;
+  updateZoomDisplay();
+}
+
+function updateZoomDisplay() {
+  const el = document.getElementById('zoomDisplay');
+  if (el) el.textContent = Math.round(zoom * 100) + '%';
 }
 
 function addNewLayer() {
-  let g = createGraphics(width, height);
+  const g = createGraphics(WORLD_SIZE, WORLD_SIZE);
   g.clear();
   layers.push(g);
   history.push([]);
   redoStack.push([]);
-
-  const sel = document.getElementById('layerSelect');
+  const sel   = document.getElementById('layerSelect');
   const index = layers.length - 1;
-  const opt = document.createElement('option');
-  opt.value = index;
-  opt.text  = `Layer ${index + 1}`;
+  const opt   = document.createElement('option');
+  opt.value = index; opt.text = `Layer ${index + 1}`;
   sel.appendChild(opt);
-
-  sel.value = index;
+  sel.value   = index;
   activeLayer = index;
 }
 
@@ -385,72 +265,115 @@ function saveState() {
 function undo() {
   if (history[activeLayer].length > 0) {
     redoStack[activeLayer].push(layers[activeLayer].get());
-    const prevImg = history[activeLayer].pop();
+    const img = history[activeLayer].pop();
     layers[activeLayer].clear();
-    layers[activeLayer].image(prevImg, 0, 0);
+    layers[activeLayer].image(img, 0, 0);
   }
 }
 
 function redo() {
   if (redoStack[activeLayer].length > 0) {
     history[activeLayer].push(layers[activeLayer].get());
-    const nextImg = redoStack[activeLayer].pop();
+    const img = redoStack[activeLayer].pop();
     layers[activeLayer].clear();
-    layers[activeLayer].image(nextImg, 0, 0);
+    layers[activeLayer].image(img, 0, 0);
   }
 }
 
+function setupEventListeners() {
+  document.getElementById('colorPicker').addEventListener('input', e => currentColor = e.target.value);
+
+  document.getElementById('brushSize').addEventListener('input', e => {
+    brushSize = parseInt(e.target.value);
+    document.getElementById('brushSizeValue').textContent = brushSize;
+  });
+
+  document.getElementById('toolSelect').addEventListener('change', e => currentTool = e.target.value);
+
+  document.getElementById('textSize')?.addEventListener('input', e => {
+    document.getElementById('textSizeValue').textContent = parseInt(e.target.value);
+  });
+
+  document.getElementById('bgColorPicker')?.addEventListener('input', e => bgColor = e.target.value);
+
+  document.getElementById('newLayerBtn').addEventListener('click', addNewLayer);
+  document.getElementById('layerSelect').addEventListener('change', e => activeLayer = +e.target.value);
+
+  document.getElementById('clearBtn').addEventListener('click', () => {
+    if (confirm('Clear the active layer?')) { saveState(); layers[activeLayer].clear(); }
+  });
+
+  document.getElementById('saveBtn').addEventListener('click', () => saveCanvas('my-painting', 'png'));
+
+  document.getElementById('undoBtn')?.addEventListener('click', undo);
+  document.getElementById('redoBtn')?.addEventListener('click', redo);
+
+  document.getElementById('zoomInBtn')?.addEventListener('click',    zoomIn);
+  document.getElementById('zoomOutBtn')?.addEventListener('click',   zoomOut);
+  document.getElementById('zoomResetBtn')?.addEventListener('click', zoomReset);
+
+  const startBtn = document.getElementById('startGameBtn');
+  const stopBtn  = document.getElementById('stopGameBtn');
+  const promptEl = document.getElementById('gamePrompt');
+
+  startBtn.addEventListener('click', async () => {
+    startBtn.disabled = true;
+    promptEl.textContent = 'Generating prompt…';
+    try {
+      const res  = await fetch('/get-prompt', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || !data?.prompt) throw new Error(data?.error || 'Failed');
+      gamePromptText = data.prompt.trim();
+      promptEl.textContent = `Draw: ${gamePromptText}`;
+      gameActive = true; gameOverlayAlpha = 0;
+      stopBtn.disabled = false;
+    } catch (err) {
+      console.error(err);
+      promptEl.textContent = 'Could not get a prompt. Try again.';
+      gameActive = false;
+    } finally {
+      startBtn.disabled = false;
+    }
+  });
+
+  stopBtn.addEventListener('click', () => {
+    gameActive = false; gamePromptText = '';
+    promptEl.textContent = '';
+    stopBtn.disabled = true;
+  });
+  stopBtn.disabled = true;
+}
+
 function keyPressed() {
-  const textInput = document.getElementById('textInput');
-  if (textInput && document.activeElement === textInput) {
-    return true;
-  }
+  if (document.activeElement === document.getElementById('textInput')) return true;
+  if (key === ' ') { spaceHeld = true; return false; }
 
   if (key >= '1' && key <= '5') {
     const sizes = [5, 10, 15, 20, 30];
-    brushSize = sizes[key - 1];
+    brushSize = sizes[+key - 1];
     document.getElementById('brushSize').value = brushSize;
     document.getElementById('brushSizeValue').textContent = brushSize;
   }
 
-  if (key === 'b') currentTool = 'brush';
-  if (key === 'e') currentTool = 'eraser';
-  if (key === 's') currentTool = 'spray';
-  if (key === 'l') currentTool = 'line';
-  if (key === 'r') currentTool = 'rectangle';
-  if (key === 'c') currentTool = 'circle';
-  if (key === 't') currentTool = 'text';
-  document.getElementById('toolSelect').value = currentTool;
-
-  if (keyCode === DELETE || keyCode === 8) {
-    saveState();
-    layers[activeLayer].clear();
+  const toolMap = {b:'brush',e:'eraser',s:'spray',l:'line',r:'rectangle',c:'circle',t:'text'};
+  if (toolMap[key]) {
+    currentTool = toolMap[key];
+    document.getElementById('toolSelect').value = currentTool;
   }
 
-  if (keyCode === 83 && (keyIsDown(CONTROL) || keyIsDown(91))) {
-    saveCanvas('my-painting', 'png');
-    return false;x
-  }
+  if (keyCode === DELETE || keyCode === 8) { saveState(); layers[activeLayer].clear(); }
 
-  if ((keyIsDown(CONTROL) || keyIsDown(91)) && (key === 'z' || key === 'Z')) {
-    undo();
-    return false;
+  const ctrl = keyIsDown(CONTROL) || keyIsDown(91);
+  if (ctrl) {
+    if (keyCode === 83)         { saveCanvas('my-painting','png'); return false; }
+    if (key==='z'||key==='Z')   { undo();       return false; }
+    if (key==='y'||key==='Y')   { redo();       return false; }
+    if (key==='='||key==='+')   { zoomIn();     return false; }
+    if (key==='-'||key==='_')   { zoomOut();    return false; }
+    if (key==='0')              { zoomReset();  return false; }
   }
-  if ((keyIsDown(CONTROL) || keyIsDown(91)) && (key === 'y' || key === 'Y')) {
-    redo();
-    return false;
-  }
-  
-  if ((keyIsDown(CONTROL) || keyIsDown(91)) && (key === '=' || key === '+')) {
-    canvasScale = constrain(canvasScale + 0.1, 0.3, 3.0);
-    return false;
-  }
-  if ((keyIsDown(CONTROL) || keyIsDown(91)) && (key === '-' || key === '_')) {
-    canvasScale = constrain(canvasScale - 0.1, 0.3, 3.0);
-    return false;
-  }
-  if ((keyIsDown(CONTROL) || keyIsDown(91)) && key === '0') {
-    canvasScale = 1.0;
-    return false;
-  }
+}
+
+function keyReleased() {
+  if (key === ' ') { spaceHeld = false; isPanning = false; }
 }
