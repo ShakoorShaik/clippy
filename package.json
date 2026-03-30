@@ -1,0 +1,26 @@
+{
+  "name": "clippy",
+  "version": "1.0.0",
+  "description": "A modern, feature-rich drawing application inspired by MS Paint with AI-powered drawing challenges. Built with p5.js and powered by OpenAI's GPT-4.",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ShakoorShaik/clippy.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/ShakoorShaik/clippy/issues"
+  },
+  "homepage": "https://github.com/ShakoorShaik/clippy#readme",
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "node-fetch": "^3.3.2"
+  }
+}
