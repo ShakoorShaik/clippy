@@ -3,7 +3,7 @@
 A modern, feature-rich drawing application inspired by MS Paint with AI-powered drawing challenges. Built with p5.js and powered by OpenAI's GPT-4.
 
 
-#DEMO
+##DEMO
 
 https://github.com/user-attachments/assets/1f05ed35-a38f-4962-bda8-71261988edc0
 
